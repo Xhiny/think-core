@@ -38,21 +38,46 @@ class Pgsql extends Driver{
      */
     public function getFields($tableName) {
         list($tableName) = explode(' ', $tableName);
-        $result =   $this->query('select fields_name as "field",fields_type as "type",fields_not_null as "null",fields_key_name as "key",fields_default as "default",fields_default as "extra" from table_msg('.$tableName.');');
+        $result =   $this->query($this->compileColumns($tableName));
         $info   =   [];
         if($result){
             foreach ($result as $key => $val) {
+                $val['extra'] = $val['default'];
+                $autoinc = $val['default'] && preg_match('/^(nextval)/', $val['default']);
+                $primary = !is_null($val['contype']);
+                $notnull = $val['nullable'] === 'f';
                 $info[$val['field']] = array(
                     'name'    => $val['field'],
                     'type'    => $val['type'],
-                    'notnull' => (bool) ($val['null'] === ''), // not null is empty, null is yes
+                    'notnull' => $notnull, // not null is empty, null is yes
                     'default' => $val['default'],
-                    'primary' => (strtolower($val['key']) == 'pri'),
-                    'autoinc' => (strtolower($val['extra']) == 'auto_increment'),
+                    'primary' => $primary,
+                    'autoinc' => $autoinc,
                 );
             }
         }
         return $info;
+    }
+
+    protected function compileColumns($table_name)
+    {
+        return sprintf(
+            'select a.attname as field, t.typname as type_name, format_type(a.atttypid, a.atttypmod) as type, '
+            .'(select tc.collcollate from pg_catalog.pg_collation tc where tc.oid = a.attcollation) as collation, '
+            .'not a.attnotnull as nullable, '
+            .'(select pg_get_expr(adbin, adrelid) from pg_attrdef where c.oid = pg_attrdef.adrelid and pg_attrdef.adnum = a.attnum) as default, '
+            .'col_description(c.oid, a.attnum) as comment, '
+            .'const.contype '
+            .'from pg_attribute a '
+            .'left join pg_class c on a.attrelid = c.oid '
+            .'left join pg_type t on a.atttypid = t.oid '
+            .'left join pg_namespace n on n.oid = c.relnamespace '
+            .'left join pg_constraint const on a.attnum= ANY(const.conkey) and a.attrelid = const.conrelid '
+            .'where c.relname = %s and n.nspname = %s and a.attnum > 0 '
+            .'order by a.attnum',
+            "'$table_name'",
+            "'public'"
+        );
     }
 
     /**
